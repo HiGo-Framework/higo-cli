@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/template"
 
-	"github.com/triasbrata/higo-cli/internal/runner"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/triasbrata/higo-cli/internal/templates"
 	"github.com/triasbrata/higo-cli/internal/wizard"
 )
@@ -27,7 +28,26 @@ func AddServer(root string, data *wizard.ProjectData, svc string) error {
 	}
 	fmt.Println()
 
-	return runner.RunTidy(root)
+	return tidyProject(root)
+}
+
+// tidyProject runs go mod tidy in root. Unlike runner.RunTidy it does NOT run
+// go get higo-framework@latest first — the framework is already in go.mod for
+// an existing project. Only tidy is needed to pull new transport dependencies.
+func tidyProject(root string) error {
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Render("  → running go mod tidy…")
+	fmt.Println(label)
+
+	cmd := exec.Command("go", "mod", "tidy")
+	cmd.Dir = root
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("go mod tidy: %w", err)
+	}
+
+	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("  ✓ go mod tidy done"))
+	return nil
 }
 
 // AddServerFiles performs all file writes/patches without running go mod tidy.
