@@ -14,15 +14,29 @@ import (
 	"github.com/triasbrata/higo-cli/internal/wizard"
 )
 
-// AddServer adds a new server type to an existing higo project.
-// data must come from Probe(). svc is one of "http", "grpc", "consumer".
+// AddServer adds a new server type and runs go mod tidy afterward.
 func AddServer(root string, data *wizard.ProjectData, svc string) error {
-	// guard: already exists
-	if svcExists(root, svc) {
-		return fmt.Errorf("%s server already exists in this project", svc)
+	steps, err := AddServerFiles(root, data, svc)
+	if err != nil {
+		return err
 	}
 
-	// update flags for the new state
+	fmt.Printf("\n  ✓  %s server added successfully\n\n", svc)
+	for _, s := range steps {
+		fmt.Printf("     %s\n", s)
+	}
+	fmt.Println()
+
+	return runner.RunTidy(root)
+}
+
+// AddServerFiles performs all file writes/patches without running go mod tidy.
+// Exported so tests can call it without the bubbletea spinner.
+func AddServerFiles(root string, data *wizard.ProjectData, svc string) ([]string, error) {
+	if svcExists(root, svc) {
+		return nil, fmt.Errorf("%s server already exists in this project", svc)
+	}
+
 	switch svc {
 	case "http":
 		data.HasHTTP = true
@@ -32,7 +46,6 @@ func AddServer(root string, data *wizard.ProjectData, svc string) error {
 		data.HasConsumer = true
 	}
 
-	// recompute mix
 	count := 0
 	for _, v := range []bool{data.HasHTTP, data.HasGRPC, data.HasConsumer} {
 		if v {
@@ -43,84 +56,69 @@ func AddServer(root string, data *wizard.ProjectData, svc string) error {
 
 	var steps []string
 
-	// 1. cmd/{svc}/main.go  — always write (4-line bootstrap call, no user code)
+	// cmd/{svc}/main.go — tiny bootstrap call, no user code
 	if err := writeFromTemplate(root, data, "cmd/"+svc+"/main.go.tmpl", "cmd/"+svc+"/main.go"); err != nil {
-		return err
+		return nil, err
 	}
 	steps = append(steps, "cmd/"+svc+"/main.go")
 
-	// 2. internals/bootstrap/{svc}.go — always write (framework wiring)
+	// internals/bootstrap/{svc}.go — framework wiring
 	if err := writeFromTemplate(root, data, "internals/bootstrap/"+svc+".go.tmpl", "internals/bootstrap/"+svc+".go"); err != nil {
-		return err
+		return nil, err
 	}
 	steps = append(steps, "internals/bootstrap/"+svc+".go")
 
-	// 3. delivery scaffold files — skip if they already exist (user-editable)
+	// delivery scaffold — skip files that already exist (user may have edited them)
 	scaffoldFiles, err := writeDeliveryScaffold(root, data, svc)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	steps = append(steps, scaffoldFiles...)
 
-	// 4. patch shared config files
+	// patch shared config files
 	if err := patchConfigFiles(root, svc, data); err != nil {
-		return err
+		return nil, err
 	}
 	steps = append(steps, "internals/config/{config,env,fx}.go (patched)")
 
-	// 5. patch delivery/fx.go — append Module function + imports
+	// patch delivery/fx.go — append Module function + imports
 	if err := patchDeliveryFx(root, data, svc); err != nil {
-		return err
+		return nil, err
 	}
 	steps = append(steps, "internals/delivery/fx.go (patched)")
 
-	// 6. mix — always regenerate when there are 2+ services
+	// regenerate mix when 2+ services are active
 	if data.HasMix {
 		if err := writeFromTemplate(root, data, "cmd/mix/main.go.tmpl", "cmd/mix/main.go"); err != nil {
-			return err
+			return nil, err
 		}
 		if err := writeFromTemplate(root, data, "internals/bootstrap/mix.go.tmpl", "internals/bootstrap/mix.go"); err != nil {
-			return err
+			return nil, err
 		}
 		steps = append(steps, "cmd/mix/main.go", "internals/bootstrap/mix.go")
 	}
 
-	// summary
-	fmt.Printf("\n  ✓  %s server added successfully\n\n", svc)
-	for _, s := range steps {
-		fmt.Printf("     %s\n", s)
-	}
-	fmt.Println()
-
-	// tidy dependencies
-	if err := runner.RunTidy(root); err != nil {
-		return fmt.Errorf("go mod tidy: %w", err)
-	}
-	return nil
+	return steps, nil
 }
 
 func svcExists(root, svc string) bool {
 	return dirExists(filepath.Join(root, "cmd", svc))
 }
 
-// writeFromTemplate renders a single template file from the embedded FS and writes it to disk.
 func writeFromTemplate(root string, data *wizard.ProjectData, tmplPath, outRelPath string) error {
 	tmplFS := templates.FS()
 	content, err := fs.ReadFile(tmplFS, "project/"+tmplPath)
 	if err != nil {
 		return fmt.Errorf("template not found: %s", tmplPath)
 	}
-
 	tmpl, err := template.New(tmplPath).Delims("[[", "]]").Parse(string(content))
 	if err != nil {
 		return fmt.Errorf("parse template %s: %w", tmplPath, err)
 	}
-
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("render template %s: %w", tmplPath, err)
 	}
-
 	outPath := filepath.Join(root, filepath.FromSlash(outRelPath))
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return err
@@ -128,14 +126,11 @@ func writeFromTemplate(root string, data *wizard.ProjectData, tmplPath, outRelPa
 	return os.WriteFile(outPath, buf.Bytes(), 0o644)
 }
 
-// writeDeliveryScaffold creates the delivery layer files for the new service.
-// Files that already exist are skipped (user may have customised them).
 func writeDeliveryScaffold(root string, data *wizard.ProjectData, svc string) ([]string, error) {
 	type fileSpec struct {
 		rel  string
 		tmpl string
 	}
-
 	var files []fileSpec
 	switch svc {
 	case "http":
@@ -197,7 +192,6 @@ func patchConfigFiles(root, svc string, data *wizard.ProjectData) error {
 	if p == nil {
 		return nil
 	}
-
 	configGo := filepath.Join(root, "internals", "config", "config.go")
 	envGo := filepath.Join(root, "internals", "config", "env.go")
 	fxGo := filepath.Join(root, "internals", "config", "fx.go")
@@ -215,14 +209,11 @@ func patchConfigFiles(root, svc string, data *wizard.ProjectData) error {
 }
 
 type patch struct {
-	// sentinel string that must NOT be present for the patch to apply
-	sentinel string
-	// find is the string to search for as insertion anchor
-	find string
-	// insertAfter: if true, insert after find; if false, insert before find
-	insertAfter bool
-	// code to insert
-	code string
+	sentinel    string // must NOT be present for the patch to apply (idempotency guard)
+	find        string // anchor text to locate insertion point
+	insertAfter bool   // if true: insert after anchor; if false: insert before anchor
+	replaceFind bool   // if true: replace the anchor with code (for struct header rewrites)
+	code        string // text to insert or replace with
 }
 
 type servicePatch struct {
@@ -243,12 +234,14 @@ func configPatch(svc string, data *wizard.ProjectData) *servicePatch {
 					code:        "\thttpserver \"github.com/triasbrata/higo-framework/server/http\"\n",
 				},
 				{
+					// replaceFind: rewrite the struct opening to include the new field first
 					sentinel:    "Http httpserver.HttpServerConfig",
 					find:        "type Config struct {",
-					insertAfter: false,
-					code:        "\ntype Config struct {\n\tHttp httpserver.HttpServerConfig",
+					replaceFind: true,
+					code:        "type Config struct {\n\tHttp httpserver.HttpServerConfig",
 				},
 				{
+					// insert before GetInstrumentationConfig (kept intact)
 					sentinel: "GetHttpConfig",
 					find:     "\nfunc (c *Config) GetInstrumentationConfig",
 					code:     "\nfunc (c *Config) GetHttpConfig() httpserver.HttpServerConfig { return c.Http }\n",
@@ -262,6 +255,7 @@ func configPatch(svc string, data *wizard.ProjectData) *servicePatch {
 					code:        "\thttpserver \"github.com/triasbrata/higo-framework/server/http\"\n",
 				},
 				{
+					// insert cfg.Http assignment before return
 					sentinel: "HTTP_PORT",
 					find:     "\treturn cfg, nil",
 					code: "\tcfg.Http = httpserver.HttpServerConfig{\n" +
@@ -278,10 +272,10 @@ func configPatch(svc string, data *wizard.ProjectData) *servicePatch {
 					code:        "\thttpserver \"github.com/triasbrata/higo-framework/server/http\"\n",
 				},
 				{
-					sentinel: "httpserver.HttpConfigProvider",
-					find:     "fx.As(new(instrumentation.InstrumentationProvider)),",
+					sentinel:    "httpserver.HttpConfigProvider",
+					find:        "fx.As(new(instrumentation.InstrumentationProvider)),",
 					insertAfter: true,
-					code:     "\n\t\t\tfx.As(new(httpserver.HttpConfigProvider)),",
+					code:        "\n\t\t\tfx.As(new(httpserver.HttpConfigProvider)),",
 				},
 			},
 		}
@@ -296,10 +290,10 @@ func configPatch(svc string, data *wizard.ProjectData) *servicePatch {
 					code:        "\tgrpcserver \"github.com/triasbrata/higo-framework/server/grpc\"\n",
 				},
 				{
-					sentinel: "Grpc grpcserver.GrpcServerConfig",
-					find:     "type Config struct {",
-					insertAfter: false,
-					code:     "\ntype Config struct {\n\tGrpc grpcserver.GrpcServerConfig",
+					sentinel:    "Grpc grpcserver.GrpcServerConfig",
+					find:        "type Config struct {",
+					replaceFind: true,
+					code:        "type Config struct {\n\tGrpc grpcserver.GrpcServerConfig",
 				},
 				{
 					sentinel: "GetGrpcConfig",
@@ -332,10 +326,10 @@ func configPatch(svc string, data *wizard.ProjectData) *servicePatch {
 					code:        "\tgrpcserver \"github.com/triasbrata/higo-framework/server/grpc\"\n",
 				},
 				{
-					sentinel: "grpcserver.GrpcConfigProvider",
-					find:     "fx.As(new(instrumentation.InstrumentationProvider)),",
+					sentinel:    "grpcserver.GrpcConfigProvider",
+					find:        "fx.As(new(instrumentation.InstrumentationProvider)),",
 					insertAfter: true,
-					code:     "\n\t\t\tfx.As(new(grpcserver.GrpcConfigProvider)),",
+					code:        "\n\t\t\tfx.As(new(grpcserver.GrpcConfigProvider)),",
 				},
 			},
 		}
@@ -351,10 +345,10 @@ func configPatch(svc string, data *wizard.ProjectData) *servicePatch {
 						"\tserverConsumer \"github.com/triasbrata/higo-framework/server/consumer\"\n",
 				},
 				{
-					sentinel: "Amqp     impl.AmqpConfig",
-					find:     "type Config struct {",
-					insertAfter: false,
-					code: "\ntype Config struct {\n" +
+					sentinel:    "Amqp     impl.AmqpConfig",
+					find:        "type Config struct {",
+					replaceFind: true,
+					code: "type Config struct {\n" +
 						"\tAmqp     impl.AmqpConfig\n" +
 						"\tConsumer serverConsumer.ConsumerServerConfig",
 				},
@@ -395,8 +389,8 @@ func configPatch(svc string, data *wizard.ProjectData) *servicePatch {
 						"\tserverConsumer \"github.com/triasbrata/higo-framework/server/consumer\"\n",
 				},
 				{
-					sentinel: "messagebroker.AmqpConfigProvider",
-					find:     "fx.As(new(instrumentation.InstrumentationProvider)),",
+					sentinel:    "messagebroker.AmqpConfigProvider",
+					find:        "fx.As(new(instrumentation.InstrumentationProvider)),",
 					insertAfter: true,
 					code: "\n\t\t\tfx.As(new(messagebroker.AmqpConfigProvider))," +
 						"\n\t\t\tfx.As(new(serverConsumer.ConsumerConfigProvider)),",
@@ -408,12 +402,16 @@ func configPatch(svc string, data *wizard.ProjectData) *servicePatch {
 }
 
 // patchFile reads a file, applies all patches in order, and writes it back.
+// Each patch has three modes:
+//   - replaceFind: replace the anchor text with code
+//   - insertAfter: insert code immediately after the anchor
+//   - default:     insert code immediately before the anchor (anchor is preserved)
 func patchFile(path string, patches []patch) error {
-	data, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	content := string(data)
+	content := string(raw)
 
 	for _, p := range patches {
 		if strings.Contains(content, p.sentinel) {
@@ -421,14 +419,18 @@ func patchFile(path string, patches []patch) error {
 		}
 		idx := strings.Index(content, p.find)
 		if idx == -1 {
-			continue // anchor not found — skip silently (file may differ from template)
+			continue // anchor not found — file differs from template, skip silently
 		}
-		if p.insertAfter {
+		switch {
+		case p.replaceFind:
+			// replace anchor with code (e.g. struct header rewrite to prepend a field)
+			content = content[:idx] + p.code + content[idx+len(p.find):]
+		case p.insertAfter:
 			insertAt := idx + len(p.find)
 			content = content[:insertAt] + p.code + content[insertAt:]
-		} else {
-			// replace the find string with code (used when we rewrite the struct header)
-			content = content[:idx] + p.code + content[idx+len(p.find):]
+		default:
+			// insert before anchor, keeping anchor intact
+			content = content[:idx] + p.code + content[idx:]
 		}
 	}
 
@@ -537,7 +539,6 @@ func ModuleConsumer() fx.Option {
 		}
 	}
 
-	// apply imports
 	for _, imp := range imports {
 		if !strings.Contains(content, imp.sentinel) {
 			if idx := strings.Index(content, "import (\n"); idx != -1 {
@@ -547,7 +548,6 @@ func ModuleConsumer() fx.Option {
 		}
 	}
 
-	// append function if missing
 	if !strings.Contains(content, fn.sentinel) {
 		content += fn.body
 	}
