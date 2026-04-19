@@ -9,6 +9,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/triasbrata/higo-cli/internal/runner"
 	"github.com/triasbrata/higo-cli/internal/templates"
 	"github.com/triasbrata/higo-cli/internal/wizard"
 )
@@ -90,6 +91,11 @@ func AddServer(root string, data *wizard.ProjectData, svc string) error {
 		fmt.Printf("     %s\n", s)
 	}
 	fmt.Println()
+
+	// tidy dependencies
+	if err := runner.RunTidy(root); err != nil {
+		return fmt.Errorf("go mod tidy: %w", err)
+	}
 	return nil
 }
 
