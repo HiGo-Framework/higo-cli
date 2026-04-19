@@ -8,7 +8,10 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+	"github.com/triasbrata/higo-cli/internal/logviewer"
 	"github.com/triasbrata/higo-cli/internal/watcher"
 )
 
@@ -55,15 +58,44 @@ Examples:
 			return err
 		}
 
+		printBanner()
+
+		logFile := filepath.Join(os.TempDir(), fmt.Sprintf("higo-%s-%d.log", svc, os.Getpid()))
+		logCh := make(chan logviewer.Entry, 500)
+
 		w, err := watcher.New(watcher.Config{
 			Service:    watcher.ServiceType(svc),
 			Exclude:    exclude,
 			BuildDelay: delay,
+			LogCh:      logCh,
+			LogFile:    logFile,
 		})
 		if err != nil {
 			return err
 		}
-		return w.Start()
+
+		watcherErr := make(chan error, 1)
+		go func() {
+			watcherErr <- w.Start()
+			close(logCh)
+		}()
+
+		m := logviewer.New(logCh, logFile)
+		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		if _, err := p.Run(); err != nil {
+			w.Stop()
+			return err
+		}
+
+		// TUI exited (user pressed q or channel closed). Ensure watcher is stopped.
+		w.Stop()
+
+		select {
+		case err := <-watcherErr:
+			return err
+		case <-time.After(3 * time.Second):
+			return nil
+		}
 	},
 }
 
@@ -71,7 +103,6 @@ Examples:
 func detectService(root string) (string, error) {
 	cmdDir := filepath.Join(root, "cmd")
 
-	// prefer mix when available
 	if _, err := os.Stat(filepath.Join(cmdDir, "mix")); err == nil {
 		return "mix", nil
 	}
@@ -126,6 +157,19 @@ func validateFramework(root string) error {
 		)
 	}
 	return nil
+}
+
+func printBanner() {
+	banner := `
+  _     _
+ | |__ (_) __ _  ___
+ | '_ \| |/ _` + "`" + ` |/ _ \
+ | | | | | (_| | (_) |
+ |_| |_|_|\__, |\___/
+           |___/
+`
+	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true).Render(banner))
+	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("  hot reload ready\n"))
 }
 
 func init() {

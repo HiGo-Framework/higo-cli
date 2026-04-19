@@ -14,16 +14,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/fsnotify/fsnotify"
+	"github.com/triasbrata/higo-cli/internal/logviewer"
 )
 
 type Watcher struct {
-	cfg    Config
-	fsw    *fsnotify.Watcher
-	log    *Logger
-	procMu sync.Mutex
-	proc   *os.Process
+	cfg     Config
+	fsw     *fsnotify.Watcher
+	logFile *os.File
+	procMu  sync.Mutex
+	proc    *os.Process
+	stopCh  chan struct{}
 }
 
 func New(cfg Config) (*Watcher, error) {
@@ -32,27 +33,48 @@ func New(cfg Config) (*Watcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Watcher{
-		cfg: cfg,
-		fsw: fsw,
-		log: newLogger(),
-	}, nil
+	w := &Watcher{
+		cfg:    cfg,
+		fsw:    fsw,
+		stopCh: make(chan struct{}),
+	}
+	if cfg.LogFile != "" {
+		f, err := os.Create(cfg.LogFile)
+		if err == nil {
+			w.logFile = f
+		}
+	}
+	return w, nil
+}
+
+// Stop signals the watcher to shut down. Safe to call from any goroutine.
+func (w *Watcher) Stop() {
+	select {
+	case <-w.stopCh:
+	default:
+		close(w.stopCh)
+	}
+	w.stopProc()
+	w.fsw.Close()
 }
 
 func (w *Watcher) Start() error {
-	printBanner()
+	defer func() {
+		if w.logFile != nil {
+			_ = w.logFile.Close()
+		}
+	}()
 
 	if err := w.addDirs(w.cfg.RootDir); err != nil {
 		return err
 	}
 
 	for _, dir := range w.fsw.WatchList() {
-		w.log.Watching(dir)
+		w.emit(logviewer.SysEntry("watch", "watching "+dir))
 	}
 	for _, ex := range w.cfg.Exclude {
-		w.log.Exclude(ex)
+		w.emit(logviewer.SysEntry("excl", "!exclude "+ex))
 	}
-	fmt.Println()
 
 	w.buildAndRun()
 
@@ -66,29 +88,29 @@ func (w *Watcher) Start() error {
 
 	for {
 		select {
+		case <-w.stopCh:
+			w.stopProc()
+			return nil
+
 		case event, ok := <-w.fsw.Events:
 			if !ok {
 				return nil
 			}
-
-			// watch new directories as they are created
 			if event.Has(fsnotify.Create) {
 				if info, err := os.Stat(event.Name); err == nil && info.IsDir() && !w.isExcluded(event.Name) {
 					if err := w.fsw.Add(event.Name); err == nil {
-						w.log.Watching(event.Name)
+						w.emit(logviewer.SysEntry("watch", "watching "+event.Name))
 					}
 					continue
 				}
 			}
-
 			if !isGoFile(event.Name) {
 				continue
 			}
 			if !event.Has(fsnotify.Write | fsnotify.Create | fsnotify.Remove | fsnotify.Rename) {
 				continue
 			}
-
-			w.log.Changed(filepath.Base(event.Name))
+			w.emit(logviewer.SysEntry("change", filepath.Base(event.Name)+" has changed"))
 
 			mu.Lock()
 			if debounce != nil {
@@ -103,10 +125,9 @@ func (w *Watcher) Start() error {
 			if !ok {
 				return nil
 			}
-			w.log.Error(err.Error())
+			w.emit(logviewer.SysEntry("error", err.Error()))
 
 		case <-sig:
-			fmt.Println()
 			w.stopProc()
 			return nil
 		}
@@ -142,35 +163,28 @@ func (w *Watcher) buildAndRun() {
 	srcPkg, outBin := w.cfg.buildArgs()
 
 	if err := os.MkdirAll("tmp", 0o755); err != nil {
-		w.log.Error("mkdir tmp: " + err.Error())
+		w.emit(logviewer.SysEntry("error", "mkdir tmp: "+err.Error()))
 		return
 	}
 
-	w.log.Building()
+	w.emit(logviewer.SysEntry("build", "building…"))
 	start := time.Now()
 
 	cmd := exec.Command("go", "build", "-o", outBin, srcPkg)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		w.log.BuildFailed(string(out))
+		w.emit(logviewer.SysEntry("error", "build failed:\n"+string(out)))
 		return
 	}
 
-	elapsed := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(
-		fmt.Sprintf("(%.2fs)", time.Since(start).Seconds()),
-	)
-	fmt.Printf("%s %s  build ok %s\n",
-		w.log.ts(),
-		w.log.buildTag.Render(),
-		elapsed,
-	)
-
+	elapsed := fmt.Sprintf("(%.2fs)", time.Since(start).Seconds())
+	w.emit(logviewer.SysEntry("build", "build ok "+elapsed))
 	w.restart(outBin)
 }
 
 func (w *Watcher) restart(bin string) {
 	w.stopProc()
-	w.log.Running()
+	w.emit(logviewer.SysEntry("run", "running…"))
 
 	cmd := exec.Command("./" + bin)
 	cmd.Env = append(os.Environ(), w.cfg.envAppName())
@@ -179,7 +193,7 @@ func (w *Watcher) restart(bin string) {
 	stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
-		w.log.Error("start failed: " + err.Error())
+		w.emit(logviewer.SysEntry("error", "start failed: "+err.Error()))
 		return
 	}
 
@@ -215,25 +229,33 @@ func (w *Watcher) stopProc() {
 func (w *Watcher) streamOutput(r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		w.log.App(scanner.Text())
+		line := scanner.Text()
+		e := logviewer.ParseApp(line)
+		if fxNoise[e.Msg] {
+			continue
+		}
+		w.emit(e)
+		// always write raw line to log file for later inspection
+		if w.logFile != nil {
+			_, _ = fmt.Fprintln(w.logFile, line)
+		}
+	}
+}
+
+// emit sends an entry to the log channel (non-blocking drop on full buffer)
+// and writes system entries to the log file.
+func (w *Watcher) emit(e logviewer.Entry) {
+	if w.cfg.LogCh != nil {
+		select {
+		case w.cfg.LogCh <- e:
+		default:
+		}
+	}
+	if w.logFile != nil && e.Kind == logviewer.KindSystem {
+		_, _ = fmt.Fprintln(w.logFile, e.Raw)
 	}
 }
 
 func isGoFile(path string) bool {
 	return filepath.Ext(path) == ".go"
-}
-
-func printBanner() {
-	banner := `
-  _     _
- | |__ (_) __ _  ___
- | '_ \| |/ _` + "`" + ` |/ _ \
- | | | | | (_| | (_) |
- |_| |_|_|\__, |\___/
-           |___/
-`
-	bannerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
-	subStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	fmt.Println(bannerStyle.Render(banner))
-	fmt.Println(subStyle.Render("  hot reload ready\n"))
 }

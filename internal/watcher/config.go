@@ -3,6 +3,8 @@ package watcher
 import (
 	"fmt"
 	"time"
+
+	"github.com/triasbrata/higo-cli/internal/logviewer"
 )
 
 var defaultExclude = []string{
@@ -23,6 +25,9 @@ type Config struct {
 	RootDir    string
 	Exclude    []string
 	BuildDelay time.Duration
+	// LogCh receives all log entries (app + system). Closed by the watcher when it exits.
+	LogCh   chan<- logviewer.Entry
+	LogFile string // absolute path of the session log file
 }
 
 func (c *Config) applyDefaults() {
