@@ -559,10 +559,9 @@ func ModuleConsumer() fx.Option {
 
 const httpHandlerTmpl = `package http
 
-import "github.com/gofiber/fiber/v2"
-
 // Handler defines the HTTP handler interface.
 // Add your handler methods here and implement them in impl/.
+// import "github.com/gofiber/fiber/v2" when you add methods.
 type Handler interface {
 	// Example: Hello(c *fiber.Ctx) error
 }
