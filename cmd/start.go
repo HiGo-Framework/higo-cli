@@ -81,7 +81,7 @@ Examples:
 		}()
 
 		m := logviewer.New(logCh, logFile)
-		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+		p := tea.NewProgram(m, tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			w.Stop()
 			return err
