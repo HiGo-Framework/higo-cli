@@ -30,7 +30,8 @@ type Model struct {
 	activeLevel Level
 	compiledRe  *regexp.Regexp
 	reErr       string
-	regexFocus  bool // true = typing in regex, false = level selector active
+	regexFocus   bool // true = typing in regex, false = level selector active
+	mouseEnabled bool // true = bubbletea captures mouse (wheel scroll); false = native text selection
 
 	width  int
 	height int
@@ -114,6 +115,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case channelClosedMsg:
 		return m, tea.Quit
 
+	case tea.MouseMsg:
+		if m.mouseEnabled && m.ready {
+			switch msg.Action {
+			case tea.MouseActionPress:
+				switch msg.Button {
+				case tea.MouseButtonWheelUp:
+					m.viewport.ScrollUp(3)
+					m.follow = false
+				case tea.MouseButtonWheelDown:
+					m.viewport.ScrollDown(3)
+				}
+			}
+		}
+
 	case tea.KeyMsg:
 		key := msg.String()
 
@@ -175,6 +190,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.follow = !m.follow
 				if m.follow && m.ready {
 					m.viewport.GotoBottom()
+				}
+			case "m":
+				m.mouseEnabled = !m.mouseEnabled
+				if m.mouseEnabled {
+					cmds = append(cmds, tea.EnableMouseCellMotion)
+				} else {
+					cmds = append(cmds, tea.DisableMouse)
 				}
 			case "up", "down":
 				if m.ready {
@@ -333,13 +355,21 @@ func (m Model) footerView() string {
 		followStr = followOff.Render("↓follow")
 	}
 
-	filterLine := reSection + "   " + levelBar + "   " + followStr
+	// mouse mode indicator
+	var mouseStr string
+	if m.mouseEnabled {
+		mouseStr = followOn.Render("[M]ouse:on")
+	} else {
+		mouseStr = followOff.Render("[M]ouse:off")
+	}
+
+	filterLine := reSection + "   " + levelBar + "   " + followStr + "   " + mouseStr
 
 	var focusHint string
 	if m.regexFocus {
 		focusHint = "[regex]  tab→level"
 	} else {
-		focusHint = "[level ←→]  tab→regex  f=follow  q=quit"
+		focusHint = "[level ←→]  tab→regex  f=follow  m=mouse  q=quit"
 	}
 	helpLine := helpStyle.Render("  " + focusHint + "  pgup/pgdn=scroll  ctrl+c=quit")
 
