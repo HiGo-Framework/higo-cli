@@ -1,0 +1,10 @@
+package grpc
+
+import "context"
+
+// Handler is the gRPC service handler interface.
+// Replace this with your proto-generated service interface after running buf generate.
+type Handler interface {
+	// Example: SayHello(ctx context.Context, req *pb.HelloRequest) (*pb.HelloResponse, error)
+	Ping(ctx context.Context) error
+}

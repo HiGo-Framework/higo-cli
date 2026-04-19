@@ -1,0 +1,21 @@
+package http
+
+import (
+	"github.com/triasbrata/higo-framework/routers"
+	"github.com/triasbrata/higo-framework/server/http"
+
+	"go.uber.org/fx"
+)
+
+type Param struct {
+	fx.In
+	Router  routers.Router
+	Handler Handler
+}
+
+func NewRouter(p Param) http.RoutingBind {
+	return func() error {
+		p.Router.Get("/hi", p.Handler.Hello)
+		return nil
+	}
+}

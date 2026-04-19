@@ -1,0 +1,32 @@
+package impl
+
+import (
+	"log/slog"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/triasbrata/higo-framework/instrumentation"
+)
+
+func (h *httpHandler) Hello(c *fiber.Ctx) error {
+	ctx, span := instrumentation.Tracer().Start(c.UserContext(), "delivery:http:Hello")
+	defer span.End()
+	c.SetUserContext(ctx)
+
+	name := c.Query("name", "World")
+
+	h.log.InfoContext(ctx, "incoming request",
+		slog.String("method", c.Method()),
+		slog.String("path", c.Path()),
+		slog.String("name", name),
+	)
+
+	res, err := h.svc.SayHello(ctx, name)
+	if err != nil {
+		h.log.ErrorContext(ctx, "hello failed",
+			slog.String("name", name),
+			slog.Any("error", err),
+		)
+		return err
+	}
+	return c.JSON(res)
+}

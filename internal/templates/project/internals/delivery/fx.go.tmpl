@@ -1,0 +1,58 @@
+package delivery
+
+import (
+[[- if .HasHTTP]]
+	deliveryHttp "[[.ModuleName]]/internals/delivery/http"
+	implHttp "[[.ModuleName]]/internals/delivery/http/impl"
+	"[[.ModuleName]]/internals/service"
+[[- end]]
+[[- if .HasGRPC]]
+	serverGrpc "github.com/triasbrata/higo-framework/server/grpc"
+	"google.golang.org/grpc"
+[[- end]]
+[[- if .HasConsumer]]
+	"[[.ModuleName]]/internals/delivery/consumer"
+	implConsumer "[[.ModuleName]]/internals/delivery/consumer/impl"
+	cmr "github.com/triasbrata/higo-framework/messagebroker/consumer"
+	serverConsumer "github.com/triasbrata/higo-framework/server/consumer"
+[[- end]]
+	"go.uber.org/fx"
+)
+
+[[- if .HasHTTP]]
+
+func ModuleHttp() fx.Option {
+	return fx.Module("delivery/http",
+		service.LoadHelloService(),
+		fx.Provide(fx.Private, implHttp.NewHandler),
+		fx.Provide(deliveryHttp.NewRouter),
+	)
+}
+[[- end]]
+[[- if .HasGRPC]]
+
+func ModuleGrpc() fx.Option {
+	return fx.Module("delivery/grpc",
+		fx.Provide(func() serverGrpc.GrpcServerBinding {
+			return func(s *grpc.Server) {
+				// Register your gRPC services here.
+				// Example:
+				//   mypkg.RegisterMyServiceServer(s, handler)
+			}
+		}),
+	)
+}
+[[- end]]
+[[- if .HasConsumer]]
+
+func ModuleConsumer() fx.Option {
+	return fx.Module("delivery/consumer",
+		fx.Provide(implConsumer.NewHandlerConsumer),
+		fx.Provide(func(handler consumer.ConsumerHandler) serverConsumer.ConsumerRouting {
+			return func(builder cmr.ConsumerBuilder) {
+				consumer.NewRoutingConsumer(handler, builder)
+			}
+		}),
+	)
+}
+[[- end]]

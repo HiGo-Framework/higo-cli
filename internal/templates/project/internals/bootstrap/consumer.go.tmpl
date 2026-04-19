@@ -1,0 +1,40 @@
+package bootstrap
+
+import (
+	"[[.ModuleName]]/internals/config"
+	"[[.ModuleName]]/internals/delivery"
+	"github.com/triasbrata/higo-framework/instrumentation"
+	"github.com/triasbrata/higo-framework/log"
+	"github.com/triasbrata/higo-framework/messagebroker"
+[[- if .HasPyroscope]]
+	pyroscopePkg "github.com/triasbrata/higo-framework/pyroscope"
+[[- end]]
+	serverConsumer "github.com/triasbrata/higo-framework/server/consumer"
+	"github.com/triasbrata/higo-framework/secrets"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.31.0"
+	"go.uber.org/fx"
+)
+
+func BootConsumerAmqp() fx.Option {
+	return fx.Options(
+		log.LoadLoggerSlog(),
+		config.LoadConfig(),
+		messagebroker.LoadMessageBrokerAmqp(),
+		delivery.ModuleConsumer(),
+		instrumentation.OtelModule(
+			func(sec secrets.Secret) instrumentation.InstrumentationIn {
+				return instrumentation.InstrumentationInFunc(func() []attribute.KeyValue {
+					return []attribute.KeyValue{
+						semconv.VCSChangeID(sec.GetSecretAsString("GIT_COMMIT_ID", "dev")),
+					}
+				})
+			},
+			semconv.VCSRepositoryName("[[.AppName]]"),
+		),
+[[- if .HasPyroscope]]
+		pyroscopePkg.LoadPyroscope(),
+[[- end]]
+		serverConsumer.LoadConsumerServer(),
+	)
+}

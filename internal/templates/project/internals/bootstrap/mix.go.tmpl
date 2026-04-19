@@ -1,0 +1,70 @@
+package bootstrap
+
+import (
+	"[[.ModuleName]]/internals/config"
+	"[[.ModuleName]]/internals/delivery"
+	"github.com/triasbrata/higo-framework/instrumentation"
+	"github.com/triasbrata/higo-framework/log"
+[[- if .HasConsumer]]
+	"github.com/triasbrata/higo-framework/messagebroker"
+[[- end]]
+[[- if or .HasHTTP .HasGRPC .HasPyroscope]]
+	"github.com/triasbrata/higo-framework/pyroscope"
+[[- end]]
+[[- if .HasHTTP]]
+	routersfx "github.com/triasbrata/higo-framework/routers/fx"
+[[- end]]
+[[- if .HasConsumer]]
+	serverConsumer "github.com/triasbrata/higo-framework/server/consumer"
+[[- end]]
+[[- if .HasGRPC]]
+	pkgGrpc "github.com/triasbrata/higo-framework/server/grpc"
+[[- end]]
+[[- if .HasHTTP]]
+	pkgHttp "github.com/triasbrata/higo-framework/server/http"
+[[- end]]
+	"github.com/triasbrata/higo-framework/secrets"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.31.0"
+	"go.uber.org/fx"
+)
+
+// BootMix combines all selected services into one fx container.
+// Shared providers (log, config, otel) are registered once to avoid duplicates.
+func BootMix() fx.Option {
+	return fx.Options(
+		log.LoadLoggerSlog(),
+		config.LoadConfig(),
+		instrumentation.OtelModule(
+			func(sec secrets.Secret) instrumentation.InstrumentationIn {
+				return instrumentation.InstrumentationInFunc(func() []attribute.KeyValue {
+					return []attribute.KeyValue{
+						semconv.VCSChangeID(sec.GetSecretAsString("GIT_COMMIT_ID", "dev")),
+					}
+				})
+			},
+			semconv.VCSRepositoryName("[[.AppName]]"),
+		),
+[[- if .HasHTTP]]
+		routersfx.LoadModuleRouter(),
+[[- end]]
+[[- if .HasPyroscope]]
+		pyroscope.LoadPyroscope(),
+[[- else if or .HasHTTP .HasGRPC]]
+		pyroscope.LoadDisabledProfiler(),
+[[- end]]
+[[- if .HasHTTP]]
+		pkgHttp.LoadHttpServer(),
+		delivery.ModuleHttp(),
+[[- end]]
+[[- if .HasGRPC]]
+		pkgGrpc.LoadGrpcServer(),
+		delivery.ModuleGrpc(),
+[[- end]]
+[[- if .HasConsumer]]
+		messagebroker.LoadMessageBrokerAmqp(),
+		serverConsumer.LoadConsumerServer(),
+		delivery.ModuleConsumer(),
+[[- end]]
+	)
+}

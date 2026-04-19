@@ -1,0 +1,17 @@
+package impl
+
+import (
+	"context"
+
+	deliveryGrpc "[[.ModuleName]]/internals/delivery/grpc"
+)
+
+type grpcHandler struct{}
+
+func NewGrpcHandler() deliveryGrpc.Handler {
+	return &grpcHandler{}
+}
+
+func (h *grpcHandler) Ping(_ context.Context) error {
+	return nil
+}

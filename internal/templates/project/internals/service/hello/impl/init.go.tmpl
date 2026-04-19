@@ -1,0 +1,33 @@
+package impl
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+
+	"[[.ModuleName]]/internals/entities"
+	"[[.ModuleName]]/internals/service/hello"
+	"github.com/triasbrata/higo-framework/instrumentation"
+)
+
+type helloService struct {
+	log *slog.Logger
+}
+
+func NewHelloService(log *slog.Logger) hello.HelloService {
+	return &helloService{log: log}
+}
+
+func (s *helloService) SayHello(ctx context.Context, name string) (entities.HelloResponse, error) {
+	_, span := instrumentation.Tracer().Start(ctx, "service:hello:SayHello")
+	defer span.End()
+
+	msg := fmt.Sprintf("Hello, %s!", name)
+
+	s.log.InfoContext(ctx, "say hello",
+		slog.String("name", name),
+		slog.String("message", msg),
+	)
+
+	return entities.HelloResponse{Message: msg}, nil
+}

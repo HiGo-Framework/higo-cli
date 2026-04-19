@@ -1,0 +1,74 @@
+package config
+
+import (
+	"github.com/triasbrata/higo-framework/instrumentation"
+[[- if .HasConsumer]]
+	"github.com/triasbrata/higo-framework/messagebroker/broker/impl"
+[[- end]]
+[[- if .HasPyroscope]]
+	pypkg "github.com/triasbrata/higo-framework/pyroscope"
+[[- end]]
+[[- if .HasConsumer]]
+	serverConsumer "github.com/triasbrata/higo-framework/server/consumer"
+[[- end]]
+[[- if .HasGRPC]]
+	grpcserver "github.com/triasbrata/higo-framework/server/grpc"
+[[- end]]
+[[- if .HasHTTP]]
+	httpserver "github.com/triasbrata/higo-framework/server/http"
+[[- end]]
+)
+
+type Config struct {
+	Otel instrumentation.InstrumentationConfig
+[[- if .HasHTTP]]
+	Http httpserver.HttpServerConfig
+[[- end]]
+[[- if .HasGRPC]]
+	Grpc grpcserver.GrpcServerConfig
+[[- end]]
+[[- if .HasPyroscope]]
+	Pyroscope pypkg.PyroscopeConfig
+[[- end]]
+[[- if .HasConsumer]]
+	Amqp     impl.AmqpConfig
+	Consumer serverConsumer.ConsumerServerConfig
+[[- end]]
+}
+
+func (c *Config) GetInstrumentationConfig() instrumentation.InstrumentationConfig {
+	return c.Otel
+}
+
+[[- if .HasHTTP]]
+
+func (c *Config) GetHttpConfig() httpserver.HttpServerConfig {
+	return c.Http
+}
+[[- end]]
+[[- if .HasGRPC]]
+
+func (c *Config) GetGrpcConfig() grpcserver.GrpcServerConfig {
+	return c.Grpc
+}
+[[- end]]
+[[- if .HasPyroscope]]
+
+func (c *Config) GetPyroscopeConfig() pypkg.PyroscopeConfig {
+	return c.Pyroscope
+}
+
+func (c *Config) IsPyroscopeEnabled() bool {
+	return c.Pyroscope.Enabled
+}
+[[- end]]
+[[- if .HasConsumer]]
+
+func (c *Config) GetAmqpConfig() impl.AmqpConfig {
+	return c.Amqp
+}
+
+func (c *Config) GetConsumerConfig() serverConsumer.ConsumerServerConfig {
+	return c.Consumer
+}
+[[- end]]

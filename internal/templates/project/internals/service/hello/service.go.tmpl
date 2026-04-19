@@ -1,0 +1,11 @@
+package hello
+
+import (
+	"context"
+
+	"[[.ModuleName]]/internals/entities"
+)
+
+type HelloService interface {
+	SayHello(ctx context.Context, name string) (entities.HelloResponse, error)
+}

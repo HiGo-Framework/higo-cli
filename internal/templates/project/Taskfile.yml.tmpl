@@ -1,0 +1,55 @@
+version: '3'
+
+tasks:
+[[- if .HasHTTP]]
+  build-http:
+    dir: cmd/http
+    cmds:
+      - go build -o ../../http_service ./...
+  run-http:
+    env:
+      APP_NAME: "[[.AppName]]-http"
+    cmds:
+      - task: build-http
+      - ./http_service
+      - defer: rm ./http_service
+[[- end]]
+[[- if .HasGRPC]]
+  build-grpc:
+    dir: cmd/grpc
+    cmds:
+      - go build -o ../../grpc_service ./...
+  run-grpc:
+    env:
+      APP_NAME: "[[.AppName]]-grpc"
+    cmds:
+      - task: build-grpc
+      - ./grpc_service
+      - defer: rm ./grpc_service
+[[- end]]
+[[- if .HasConsumer]]
+  build-consumer:
+    dir: cmd/consumer
+    cmds:
+      - go build -o ../../consumer_service ./...
+  run-consumer:
+    env:
+      APP_NAME: "[[.AppName]]-consumer"
+    cmds:
+      - task: build-consumer
+      - ./consumer_service
+      - defer: rm ./consumer_service
+[[- end]]
+[[- if .HasMix]]
+  build-mix:
+    dir: cmd/mix
+    cmds:
+      - go build -o ../../mix_service ./...
+  run-mix:
+    env:
+      APP_NAME: "[[.AppName]]"
+    cmds:
+      - task: build-mix
+      - ./mix_service
+      - defer: rm ./mix_service
+[[- end]]

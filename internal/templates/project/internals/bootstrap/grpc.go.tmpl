@@ -1,0 +1,38 @@
+package bootstrap
+
+import (
+	"[[.ModuleName]]/internals/config"
+	"[[.ModuleName]]/internals/delivery"
+	"github.com/triasbrata/higo-framework/instrumentation"
+	"github.com/triasbrata/higo-framework/log"
+	"github.com/triasbrata/higo-framework/pyroscope"
+	pkgGrpc "github.com/triasbrata/higo-framework/server/grpc"
+	"github.com/triasbrata/higo-framework/secrets"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.31.0"
+	"go.uber.org/fx"
+)
+
+func BootGRPC() fx.Option {
+	return fx.Options(
+		log.LoadLoggerSlog(),
+		config.LoadConfig(),
+		instrumentation.OtelModule(
+			func(sec secrets.Secret) instrumentation.InstrumentationIn {
+				return instrumentation.InstrumentationInFunc(func() []attribute.KeyValue {
+					return []attribute.KeyValue{
+						semconv.VCSChangeID(sec.GetSecretAsString("GIT_COMMIT_ID", "dev")),
+					}
+				})
+			},
+			semconv.VCSRepositoryName("[[.AppName]]"),
+		),
+[[- if .HasPyroscope]]
+		pyroscope.LoadPyroscope(),
+[[- else]]
+		pyroscope.LoadDisabledProfiler(),
+[[- end]]
+		pkgGrpc.LoadGrpcServer(),
+		delivery.ModuleGrpc(),
+	)
+}

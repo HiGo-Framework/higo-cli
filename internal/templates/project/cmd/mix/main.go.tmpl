@@ -1,0 +1,10 @@
+package main
+
+import (
+	"[[.ModuleName]]/internals/bootstrap"
+	"go.uber.org/fx"
+)
+
+func main() {
+	fx.New(bootstrap.BootMix()).Run()
+}

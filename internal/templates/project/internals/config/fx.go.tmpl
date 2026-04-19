@@ -1,0 +1,49 @@
+package config
+
+import (
+	"github.com/triasbrata/higo-framework/instrumentation"
+[[- if .HasConsumer]]
+	"github.com/triasbrata/higo-framework/messagebroker"
+[[- end]]
+[[- if .HasPyroscope]]
+	pypkg "github.com/triasbrata/higo-framework/pyroscope"
+[[- end]]
+[[- if .HasConsumer]]
+	serverConsumer "github.com/triasbrata/higo-framework/server/consumer"
+[[- end]]
+[[- if .HasGRPC]]
+	grpcserver "github.com/triasbrata/higo-framework/server/grpc"
+[[- end]]
+[[- if .HasHTTP]]
+	httpserver "github.com/triasbrata/higo-framework/server/http"
+[[- end]]
+	"github.com/triasbrata/higo-framework/secrets/secretEnv"
+	"go.uber.org/fx"
+)
+
+func LoadConfig() fx.Option {
+	return fx.Module("config",
+		fx.Provide(secretEnv.NewSecretFromEnv),
+		fx.Provide(NewConfigEnv),
+		fx.Provide(fx.Annotate(
+			func(cfg *Config) *Config { return cfg },
+			fx.As(new(instrumentation.InstrumentationProvider)),
+[[- if .HasPyroscope]]
+			fx.As(new(instrumentation.PyroscopeChecker)),
+[[- end]]
+[[- if .HasHTTP]]
+			fx.As(new(httpserver.HttpConfigProvider)),
+[[- end]]
+[[- if .HasGRPC]]
+			fx.As(new(grpcserver.GrpcConfigProvider)),
+[[- end]]
+[[- if .HasPyroscope]]
+			fx.As(new(pypkg.PyroscopeConfigProvider)),
+[[- end]]
+[[- if .HasConsumer]]
+			fx.As(new(messagebroker.AmqpConfigProvider)),
+			fx.As(new(serverConsumer.ConsumerConfigProvider)),
+[[- end]]
+		)),
+	)
+}

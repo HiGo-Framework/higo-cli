@@ -1,0 +1,12 @@
+package service
+
+import (
+	"[[.ModuleName]]/internals/service/hello/impl"
+	"go.uber.org/fx"
+)
+
+func LoadHelloService() fx.Option {
+	return fx.Module("service/hello",
+		fx.Provide(impl.NewHelloService),
+	)
+}

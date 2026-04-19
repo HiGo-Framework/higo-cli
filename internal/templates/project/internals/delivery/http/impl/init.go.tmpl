@@ -1,0 +1,17 @@
+package impl
+
+import (
+	"log/slog"
+
+	deliveryHttp "[[.ModuleName]]/internals/delivery/http"
+	"[[.ModuleName]]/internals/service/hello"
+)
+
+type httpHandler struct {
+	svc hello.HelloService
+	log *slog.Logger
+}
+
+func NewHandler(svc hello.HelloService, log *slog.Logger) deliveryHttp.Handler {
+	return &httpHandler{svc: svc, log: log}
+}

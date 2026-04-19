@@ -1,0 +1,23 @@
+package impl
+
+import (
+	"fmt"
+
+	"[[.ModuleName]]/internals/delivery/consumer"
+	"github.com/triasbrata/higo-framework/instrumentation"
+	cmr "github.com/triasbrata/higo-framework/messagebroker/consumer"
+)
+
+type handler struct{}
+
+func (h *handler) HandleMessage(c cmr.CtxConsumer) error {
+	ctx, span := instrumentation.Tracer().Start(c.UserContext(), "delivery:consumer:HandleMessage")
+	defer span.End()
+	_ = ctx
+	fmt.Printf("received message: %s\n", c.Body())
+	return nil
+}
+
+func NewHandlerConsumer() consumer.ConsumerHandler {
+	return &handler{}
+}

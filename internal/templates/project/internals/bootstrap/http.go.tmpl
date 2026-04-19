@@ -1,0 +1,40 @@
+package bootstrap
+
+import (
+	"[[.ModuleName]]/internals/config"
+	"[[.ModuleName]]/internals/delivery"
+	"github.com/triasbrata/higo-framework/instrumentation"
+	plog "github.com/triasbrata/higo-framework/log"
+	"github.com/triasbrata/higo-framework/pyroscope"
+	routersfx "github.com/triasbrata/higo-framework/routers/fx"
+	"github.com/triasbrata/higo-framework/secrets"
+	pkgHttp "github.com/triasbrata/higo-framework/server/http"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.31.0"
+	"go.uber.org/fx"
+)
+
+func BootHttpServer() fx.Option {
+	return fx.Options(
+		plog.LoadLoggerSlog(),
+		config.LoadConfig(),
+		instrumentation.OtelModule(
+			func(sec secrets.Secret) instrumentation.InstrumentationIn {
+				return instrumentation.InstrumentationInFunc(func() []attribute.KeyValue {
+					return []attribute.KeyValue{
+						semconv.VCSChangeID(sec.GetSecretAsString("GIT_COMMIT_ID", "dev")),
+					}
+				})
+			},
+			semconv.VCSRepositoryName("[[.AppName]]"),
+		),
+		routersfx.LoadModuleRouter(),
+[[- if .HasPyroscope]]
+		pyroscope.LoadPyroscope(),
+[[- else]]
+		pyroscope.LoadDisabledProfiler(),
+[[- end]]
+		pkgHttp.LoadHttpServer(),
+		delivery.ModuleHttp(),
+	)
+}

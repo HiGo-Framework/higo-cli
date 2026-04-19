@@ -1,0 +1,7 @@
+package consumer
+
+import cmr "github.com/triasbrata/higo-framework/messagebroker/consumer"
+
+type ConsumerHandler interface {
+	HandleMessage(c cmr.CtxConsumer) error
+}

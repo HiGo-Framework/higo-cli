@@ -1,0 +1,14 @@
+package consumer
+
+import (
+	cmr "github.com/triasbrata/higo-framework/messagebroker/consumer"
+	"github.com/triasbrata/higo-framework/middleware"
+)
+
+func NewRoutingConsumer(handler ConsumerHandler, builder cmr.ConsumerBuilder) {
+	builder.Use(middleware.OtelConsumerExtract())
+	builder.Consume("[[.AppName]].messages",
+		cmr.WithAmqpTopology(cmr.AmqpTopologyConsumer{PrefetchCount: 10}),
+		handler.HandleMessage,
+	)
+}
