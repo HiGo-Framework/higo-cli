@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -33,6 +34,9 @@ type Model struct {
 	regexFocus   bool // true = typing in regex, false = level selector active
 	mouseEnabled bool // true = bubbletea captures mouse (wheel scroll); false = native text selection
 
+	lastClickAt  time.Time // for double-click detection
+	mouseTempOff bool      // true when double-click temporarily disabled mouse
+
 	width  int
 	height int
 	ready  bool
@@ -41,6 +45,12 @@ type Model struct {
 
 type newEntryMsg Entry
 type channelClosedMsg struct{}
+type clearSelectionMsg struct{}
+
+// clearSelectionCmd briefly claims then releases mouse to force the terminal to drop any text selection.
+func clearSelectionCmd() tea.Cmd {
+	return func() tea.Msg { return clearSelectionMsg{} }
+}
 
 // New creates the initial TUI model.
 func New(logCh <-chan Entry, logFile string) Model {
@@ -115,11 +125,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case channelClosedMsg:
 		return m, tea.Quit
 
+	case clearSelectionMsg:
+		if !m.mouseEnabled {
+			return m, tea.DisableMouse
+		}
+
 	case tea.MouseMsg:
 		if m.mouseEnabled && m.ready {
 			switch msg.Action {
 			case tea.MouseActionPress:
 				switch msg.Button {
+				case tea.MouseButtonLeft:
+					if time.Since(m.lastClickAt) < 400*time.Millisecond {
+						// double-click: temp disable mouse so user can select text; re-enables on next scroll key
+						m.mouseTempOff = true
+						m.lastClickAt = time.Time{}
+						return m, tea.Batch(append(cmds, tea.DisableMouse)...)
+					}
+					m.lastClickAt = time.Now()
 				case tea.MouseButtonWheelUp:
 					m.viewport.ScrollUp(3)
 					m.follow = false
@@ -148,14 +171,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// scroll keys always work regardless of focus
 		switch key {
-		case "pgup", "pgdown", "home", "end":
+		case "pgup", "pgdown", "home", "end", "up", "down":
+			if m.mouseTempOff {
+				// first press clears the text selection; next press will scroll
+				m.mouseTempOff = false
+				return m, tea.Batch(append(cmds, tea.EnableMouseCellMotion)...)
+			}
 			if m.ready {
 				var vpCmd tea.Cmd
 				m.viewport, vpCmd = m.viewport.Update(msg)
 				cmds = append(cmds, vpCmd)
-				if key == "pgup" {
+				if key == "pgup" || key == "up" {
 					m.follow = false
 				}
+			}
+			if !m.mouseEnabled {
+				// briefly claim mouse ownership to force terminal to drop any text selection
+				cmds = append(cmds, tea.EnableMouseCellMotion, clearSelectionCmd())
 			}
 			return m, tea.Batch(cmds...)
 		}
@@ -190,20 +222,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.follow = !m.follow
 				if m.follow && m.ready {
 					m.viewport.GotoBottom()
-				}
-			case "m":
-				m.mouseEnabled = !m.mouseEnabled
-				if m.mouseEnabled {
-					cmds = append(cmds, tea.EnableMouseCellMotion)
-				} else {
-					cmds = append(cmds, tea.DisableMouse)
-				}
-			case "up", "down":
-				if m.ready {
-					var vpCmd tea.Cmd
-					m.viewport, vpCmd = m.viewport.Update(msg)
-					cmds = append(cmds, vpCmd)
-					m.follow = false
 				}
 			}
 		}
@@ -357,21 +375,24 @@ func (m Model) footerView() string {
 
 	// mouse mode indicator
 	var mouseStr string
-	if m.mouseEnabled {
+	switch {
+	case m.mouseTempOff:
+		mouseStr = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true).Render("[M]ouse:selecting…")
+	case m.mouseEnabled:
 		mouseStr = followOn.Render("[M]ouse:on")
-	} else {
+	default:
 		mouseStr = followOff.Render("[M]ouse:off")
 	}
 
-	filterLine := reSection + "   " + levelBar + "   " + followStr + "   " + mouseStr
+	filterLine := reSection + "   " + levelBar + "   " + followStr
 
 	var focusHint string
 	if m.regexFocus {
 		focusHint = "[regex]  tab→level"
 	} else {
-		focusHint = "[level ←→]  tab→regex  f=follow  m=mouse  q=quit"
+		focusHint = "[level ←→]  tab→regex  f=follow  q=quit"
 	}
-	helpLine := helpStyle.Render("  " + focusHint + "  pgup/pgdn=scroll  ctrl+c=quit")
+	helpLine := helpStyle.Render("  ") + mouseStr + helpStyle.Render("  ") + focusHint + helpStyle.Render("  pgup/pgdn=scroll  ctrl+c=quit")
 
 	content := filterLine + "\n" + helpLine
 	return footerBorder.Width(m.width).Render(content)
