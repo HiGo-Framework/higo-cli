@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"text/template"
 
 	"github.com/charmbracelet/lipgloss"
@@ -31,22 +30,27 @@ func AddServer(root string, data *wizard.ProjectData, svc string) error {
 	return tidyProject(root)
 }
 
-// tidyProject runs go mod tidy in root. Unlike runner.RunTidy it does NOT run
-// go get higo-framework@latest first — the framework is already in go.mod for
-// an existing project. Only tidy is needed to pull new transport dependencies.
+// tidyProject runs go mod download then go mod tidy.
+// download populates go.sum with hashes for newly-imported sub-packages;
+// tidy then removes any unused entries.
 func tidyProject(root string) error {
-	label := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Render("  → running go mod tidy…")
-	fmt.Println(label)
+	run := func(label string, args ...string) error {
+		fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Render("  → " + label))
+		cmd := exec.Command("go", args...)
+		cmd.Dir = root
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
 
-	cmd := exec.Command("go", "mod", "tidy")
-	cmd.Dir = root
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	if err := run("go mod download…", "mod", "download"); err != nil {
+		return fmt.Errorf("go mod download: %w", err)
+	}
+	if err := run("go mod tidy…", "mod", "tidy"); err != nil {
 		return fmt.Errorf("go mod tidy: %w", err)
 	}
 
-	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("  ✓ go mod tidy done"))
+	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("  ✓ dependencies updated"))
 	return nil
 }
 
@@ -95,17 +99,16 @@ func AddServerFiles(root string, data *wizard.ProjectData, svc string) ([]string
 	}
 	steps = append(steps, scaffoldFiles...)
 
-	// patch shared config files
-	if err := patchConfigFiles(root, svc, data); err != nil {
+	// regenerate shared config + delivery/fx files from templates.
+	// Templates already handle every combination via [[- if .HasX]] guards,
+	// so this is idempotent across service combos (unlike text-patching,
+	// which could corrupt anchors after 2+ patches).
+	if err := regenerateSharedFiles(root, data); err != nil {
 		return nil, err
 	}
-	steps = append(steps, "internals/config/{config,env,fx}.go (patched)")
-
-	// patch delivery/fx.go — append Module function + imports
-	if err := patchDeliveryFx(root, data, svc); err != nil {
-		return nil, err
-	}
-	steps = append(steps, "internals/delivery/fx.go (patched)")
+	steps = append(steps, "internals/config/{config,env,fx}.go (regenerated)")
+	steps = append(steps, "internals/delivery/fx.go (regenerated)")
+	steps = append(steps, ".env.example, Taskfile.yml (regenerated)")
 
 	// regenerate mix when 2+ services are active
 	if data.HasMix {
@@ -205,375 +208,51 @@ func renderInline(tmplStr string, data *wizard.ProjectData) (string, error) {
 	return buf.String(), nil
 }
 
-// ── config patching ───────────────────────────────────────────────────────────
+// ── shared file regeneration ──────────────────────────────────────────────────
 
-func patchConfigFiles(root, svc string, data *wizard.ProjectData) error {
-	p := configPatch(svc, data)
-	if p == nil {
-		return nil
+// Repair re-renders the shared config + delivery wiring files from templates,
+// based on the current on-disk project state (via Probe). Useful when those
+// files get corrupted (e.g. legacy text-patching or manual edits gone wrong).
+func Repair(root string) ([]string, error) {
+	data, err := Probe(root)
+	if err != nil {
+		return nil, err
 	}
-	configGo := filepath.Join(root, "internals", "config", "config.go")
-	envGo := filepath.Join(root, "internals", "config", "env.go")
-	fxGo := filepath.Join(root, "internals", "config", "fx.go")
-
-	if err := patchFile(configGo, p.configPatches); err != nil {
-		return fmt.Errorf("patch config.go: %w", err)
+	if err := regenerateSharedFiles(root, data); err != nil {
+		return nil, err
 	}
-	if err := patchFile(envGo, p.envPatches); err != nil {
-		return fmt.Errorf("patch env.go: %w", err)
-	}
-	if err := patchFile(fxGo, p.fxPatches); err != nil {
-		return fmt.Errorf("patch config/fx.go: %w", err)
-	}
-	return nil
+	return []string{
+		"internals/config/config.go",
+		"internals/config/env.go",
+		"internals/config/fx.go",
+		"internals/delivery/fx.go",
+		".env.example",
+		"Taskfile.yml",
+	}, nil
 }
 
-type patch struct {
-	sentinel    string // must NOT be present for the patch to apply (idempotency guard)
-	find        string // anchor text to locate insertion point
-	insertAfter bool   // if true: insert after anchor; if false: insert before anchor
-	replaceFind bool   // if true: replace the anchor with code (for struct header rewrites)
-	code        string // text to insert or replace with
-}
-
-type servicePatch struct {
-	configPatches []patch
-	envPatches    []patch
-	fxPatches     []patch
-}
-
-func configPatch(svc string, data *wizard.ProjectData) *servicePatch {
-	switch svc {
-	case "http":
-		return &servicePatch{
-			configPatches: []patch{
-				{
-					sentinel:    `httpserver "github.com/triasbrata/higo-framework/server/http"`,
-					find:        "import (\n",
-					insertAfter: true,
-					code:        "\thttpserver \"github.com/triasbrata/higo-framework/server/http\"\n",
-				},
-				{
-					// replaceFind: rewrite the struct opening to include the new field first
-					sentinel:    "Http httpserver.HttpServerConfig",
-					find:        "type Config struct {",
-					replaceFind: true,
-					code:        "type Config struct {\n\tHttp httpserver.HttpServerConfig",
-				},
-				{
-					// insert before GetInstrumentationConfig (kept intact)
-					sentinel: "GetHttpConfig",
-					find:     "\nfunc (c *Config) GetInstrumentationConfig",
-					code:     "\nfunc (c *Config) GetHttpConfig() httpserver.HttpServerConfig { return c.Http }\n",
-				},
-			},
-			envPatches: []patch{
-				{
-					sentinel:    `httpserver "github.com/triasbrata/higo-framework/server/http"`,
-					find:        "import (\n",
-					insertAfter: true,
-					code:        "\thttpserver \"github.com/triasbrata/higo-framework/server/http\"\n",
-				},
-				{
-					// insert cfg.Http assignment before return
-					sentinel: "HTTP_PORT",
-					find:     "\treturn cfg, nil",
-					code: "\tcfg.Http = httpserver.HttpServerConfig{\n" +
-						"\t\tPort:    secret.GetSecretAsString(\"HTTP_PORT\", \"8000\"),\n" +
-						"\t\tAddress: secret.GetSecretAsString(\"HTTP_ADDRESS\", \"\"),\n" +
-						"\t}\n",
-				},
-			},
-			fxPatches: []patch{
-				{
-					sentinel:    `httpserver "github.com/triasbrata/higo-framework/server/http"`,
-					find:        "import (\n",
-					insertAfter: true,
-					code:        "\thttpserver \"github.com/triasbrata/higo-framework/server/http\"\n",
-				},
-				{
-					sentinel:    "httpserver.HttpConfigProvider",
-					find:        "fx.As(new(instrumentation.InstrumentationProvider)),",
-					insertAfter: true,
-					code:        "\n\t\t\tfx.As(new(httpserver.HttpConfigProvider)),",
-				},
-			},
-		}
-
-	case "grpc":
-		return &servicePatch{
-			configPatches: []patch{
-				{
-					sentinel:    `grpcserver "github.com/triasbrata/higo-framework/server/grpc"`,
-					find:        "import (\n",
-					insertAfter: true,
-					code:        "\tgrpcserver \"github.com/triasbrata/higo-framework/server/grpc\"\n",
-				},
-				{
-					sentinel:    "Grpc grpcserver.GrpcServerConfig",
-					find:        "type Config struct {",
-					replaceFind: true,
-					code:        "type Config struct {\n\tGrpc grpcserver.GrpcServerConfig",
-				},
-				{
-					sentinel: "GetGrpcConfig",
-					find:     "\nfunc (c *Config) GetInstrumentationConfig",
-					code:     "\nfunc (c *Config) GetGrpcConfig() grpcserver.GrpcServerConfig { return c.Grpc }\n",
-				},
-			},
-			envPatches: []patch{
-				{
-					sentinel:    `grpcserver "github.com/triasbrata/higo-framework/server/grpc"`,
-					find:        "import (\n",
-					insertAfter: true,
-					code:        "\tgrpcserver \"github.com/triasbrata/higo-framework/server/grpc\"\n",
-				},
-				{
-					sentinel: "GRPC_PORT",
-					find:     "\treturn cfg, nil",
-					code: "\tcfg.Grpc = grpcserver.GrpcServerConfig{\n" +
-						"\t\tEnableReflection: true,\n" +
-						"\t\tPort:             secret.GetSecretAsString(\"GRPC_PORT\", \"8001\"),\n" +
-						"\t\tAddress:          secret.GetSecretAsString(\"GRPC_ADDRESS\", \"\"),\n" +
-						"\t}\n",
-				},
-			},
-			fxPatches: []patch{
-				{
-					sentinel:    `grpcserver "github.com/triasbrata/higo-framework/server/grpc"`,
-					find:        "import (\n",
-					insertAfter: true,
-					code:        "\tgrpcserver \"github.com/triasbrata/higo-framework/server/grpc\"\n",
-				},
-				{
-					sentinel:    "grpcserver.GrpcConfigProvider",
-					find:        "fx.As(new(instrumentation.InstrumentationProvider)),",
-					insertAfter: true,
-					code:        "\n\t\t\tfx.As(new(grpcserver.GrpcConfigProvider)),",
-				},
-			},
-		}
-
-	case "consumer":
-		return &servicePatch{
-			configPatches: []patch{
-				{
-					sentinel:    `"github.com/triasbrata/higo-framework/messagebroker/broker/impl"`,
-					find:        "import (\n",
-					insertAfter: true,
-					code: "\timpl \"github.com/triasbrata/higo-framework/messagebroker/broker/impl\"\n" +
-						"\tserverConsumer \"github.com/triasbrata/higo-framework/server/consumer\"\n",
-				},
-				{
-					sentinel:    "Amqp     impl.AmqpConfig",
-					find:        "type Config struct {",
-					replaceFind: true,
-					code: "type Config struct {\n" +
-						"\tAmqp     impl.AmqpConfig\n" +
-						"\tConsumer serverConsumer.ConsumerServerConfig",
-				},
-				{
-					sentinel: "GetAmqpConfig",
-					find:     "\nfunc (c *Config) GetInstrumentationConfig",
-					code: "\nfunc (c *Config) GetAmqpConfig() impl.AmqpConfig { return c.Amqp }\n" +
-						"func (c *Config) GetConsumerConfig() serverConsumer.ConsumerServerConfig { return c.Consumer }\n",
-				},
-			},
-			envPatches: []patch{
-				{
-					sentinel:    `"github.com/triasbrata/higo-framework/messagebroker/broker/impl"`,
-					find:        "import (\n",
-					insertAfter: true,
-					code: "\timpl \"github.com/triasbrata/higo-framework/messagebroker/broker/impl\"\n" +
-						"\tserverConsumer \"github.com/triasbrata/higo-framework/server/consumer\"\n" +
-						"\t\"time\"\n",
-				},
-				{
-					sentinel: "AMQP_URI",
-					find:     "\treturn cfg, nil",
-					code: "\tcfg.Amqp = impl.AmqpConfig{\n" +
-						"\t\tConnectionName: secret.GetSecretAsString(\"AMQP_CONNECTION_NAME\", \"" + data.AppName + "-consumer\"),\n" +
-						"\t\tURI:            secret.GetSecretAsString(\"AMQP_URI\", \"amqp://guest:guest@localhost:5672\"),\n" +
-						"\t}\n" +
-						"\tcfg.Consumer = serverConsumer.ConsumerServerConfig{\n" +
-						"\t\tRestartTime: 5 * time.Second,\n" +
-						"\t}\n",
-				},
-			},
-			fxPatches: []patch{
-				{
-					sentinel:    `"github.com/triasbrata/higo-framework/messagebroker"`,
-					find:        "import (\n",
-					insertAfter: true,
-					code: "\t\"github.com/triasbrata/higo-framework/messagebroker\"\n" +
-						"\tserverConsumer \"github.com/triasbrata/higo-framework/server/consumer\"\n",
-				},
-				{
-					sentinel:    "messagebroker.AmqpConfigProvider",
-					find:        "fx.As(new(instrumentation.InstrumentationProvider)),",
-					insertAfter: true,
-					code: "\n\t\t\tfx.As(new(messagebroker.AmqpConfigProvider))," +
-						"\n\t\t\tfx.As(new(serverConsumer.ConsumerConfigProvider)),",
-				},
-			},
+// regenerateSharedFiles re-renders config.go, env.go, fx.go, and delivery/fx.go
+// from their templates. Safe to call repeatedly: the templates use [[- if .HasX]]
+// guards so the output always reflects the full set of enabled services in data.
+func regenerateSharedFiles(root string, data *wizard.ProjectData) error {
+	shared := []struct {
+		tmpl, out string
+	}{
+		{"internals/config/config.go.tmpl", "internals/config/config.go"},
+		{"internals/config/env.go.tmpl", "internals/config/env.go"},
+		{"internals/config/fx.go.tmpl", "internals/config/fx.go"},
+		{"internals/delivery/fx.go.tmpl", "internals/delivery/fx.go"},
+		{"env.example.tmpl", ".env.example"},
+		{"Taskfile.yml.tmpl", "Taskfile.yml"},
+	}
+	for _, f := range shared {
+		if err := writeFromTemplate(root, data, f.tmpl, f.out); err != nil {
+			return fmt.Errorf("regenerate %s: %w", f.out, err)
 		}
 	}
 	return nil
 }
 
-// patchFile reads a file, applies all patches in order, and writes it back.
-// Each patch has three modes:
-//   - replaceFind: replace the anchor text with code
-//   - insertAfter: insert code immediately after the anchor
-//   - default:     insert code immediately before the anchor (anchor is preserved)
-func patchFile(path string, patches []patch) error {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	content := string(raw)
-
-	for _, p := range patches {
-		if strings.Contains(content, p.sentinel) {
-			continue // already applied
-		}
-		idx := strings.Index(content, p.find)
-		if idx == -1 {
-			continue // anchor not found — file differs from template, skip silently
-		}
-		switch {
-		case p.replaceFind:
-			// replace anchor with code (e.g. struct header rewrite to prepend a field)
-			content = content[:idx] + p.code + content[idx+len(p.find):]
-		case p.insertAfter:
-			insertAt := idx + len(p.find)
-			content = content[:insertAt] + p.code + content[insertAt:]
-		default:
-			// insert before anchor, keeping anchor intact
-			content = content[:idx] + p.code + content[idx:]
-		}
-	}
-
-	return os.WriteFile(path, []byte(content), 0o644)
-}
-
-// ── delivery/fx.go patching ───────────────────────────────────────────────────
-
-func patchDeliveryFx(root string, data *wizard.ProjectData, svc string) error {
-	fxPath := filepath.Join(root, "internals", "delivery", "fx.go")
-	raw, err := os.ReadFile(fxPath)
-	if err != nil {
-		return err
-	}
-	content := string(raw)
-
-	type importSpec struct{ sentinel, line string }
-	type fnSpec struct{ sentinel, body string }
-
-	var imports []importSpec
-	var fn fnSpec
-
-	switch svc {
-	case "http":
-		imports = []importSpec{
-			{
-				sentinel: data.ModuleName + "/internals/delivery/http\"",
-				line:     "\tdeliveryHttp \"" + data.ModuleName + "/internals/delivery/http\"\n",
-			},
-			{
-				sentinel: data.ModuleName + "/internals/delivery/http/impl\"",
-				line:     "\timplHttp \"" + data.ModuleName + "/internals/delivery/http/impl\"\n",
-			},
-		}
-		fn = fnSpec{
-			sentinel: "ModuleHttp",
-			body: `
-func ModuleHttp() fx.Option {
-	return fx.Module("delivery/http",
-		fx.Provide(fx.Private, implHttp.NewHandler),
-		fx.Provide(deliveryHttp.NewRouter),
-	)
-}
-`,
-		}
-
-	case "grpc":
-		imports = []importSpec{
-			{
-				sentinel: `"google.golang.org/grpc"`,
-				line:     "\t\"google.golang.org/grpc\"\n",
-			},
-			{
-				sentinel: `serverGrpc "github.com/triasbrata/higo-framework/server/grpc"`,
-				line:     "\tserverGrpc \"github.com/triasbrata/higo-framework/server/grpc\"\n",
-			},
-		}
-		fn = fnSpec{
-			sentinel: "ModuleGrpc",
-			body: `
-func ModuleGrpc() fx.Option {
-	return fx.Module("delivery/grpc",
-		fx.Provide(func() serverGrpc.GrpcServerBinding {
-			return func(s *grpc.Server) {
-				// Register your gRPC services here.
-			}
-		}),
-	)
-}
-`,
-		}
-
-	case "consumer":
-		imports = []importSpec{
-			{
-				sentinel: data.ModuleName + "/internals/delivery/consumer\"",
-				line:     "\t\"" + data.ModuleName + "/internals/delivery/consumer\"\n",
-			},
-			{
-				sentinel: data.ModuleName + "/internals/delivery/consumer/impl\"",
-				line:     "\timplConsumer \"" + data.ModuleName + "/internals/delivery/consumer/impl\"\n",
-			},
-			{
-				sentinel: `cmr "github.com/triasbrata/higo-framework/messagebroker/consumer"`,
-				line:     "\tcmr \"github.com/triasbrata/higo-framework/messagebroker/consumer\"\n",
-			},
-			{
-				sentinel: `serverConsumer "github.com/triasbrata/higo-framework/server/consumer"`,
-				line:     "\tserverConsumer \"github.com/triasbrata/higo-framework/server/consumer\"\n",
-			},
-		}
-		fn = fnSpec{
-			sentinel: "ModuleConsumer",
-			body: `
-func ModuleConsumer() fx.Option {
-	return fx.Module("delivery/consumer",
-		fx.Provide(implConsumer.NewHandlerConsumer),
-		fx.Provide(func(handler consumer.ConsumerHandler) serverConsumer.ConsumerRouting {
-			return func(builder cmr.ConsumerBuilder) {
-				consumer.NewRoutingConsumer(handler, builder)
-			}
-		}),
-	)
-}
-`,
-		}
-	}
-
-	for _, imp := range imports {
-		if !strings.Contains(content, imp.sentinel) {
-			if idx := strings.Index(content, "import (\n"); idx != -1 {
-				insertAt := idx + len("import (\n")
-				content = content[:insertAt] + imp.line + content[insertAt:]
-			}
-		}
-	}
-
-	if !strings.Contains(content, fn.sentinel) {
-		content += fn.body
-	}
-
-	return os.WriteFile(fxPath, []byte(content), 0o644)
-}
 
 // ── delivery scaffold inline templates ────────────────────────────────────────
 
