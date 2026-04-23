@@ -3,6 +3,7 @@ package runner
 import (
 	"bufio"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -11,6 +12,28 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// RunTidyPlain runs `go get higo-framework@latest` + `go mod tidy` with output
+// streamed directly to stdout/stderr. Unlike RunTidy, it does NOT use bubbletea
+// so it works in headless/CI environments without a TTY.
+func RunTidyPlain(dir string) error {
+	get := exec.Command("go", "get", "github.com/triasbrata/higo-framework@latest")
+	get.Dir = dir
+	get.Stdout = os.Stdout
+	get.Stderr = os.Stderr
+	if err := get.Run(); err != nil {
+		return fmt.Errorf("go get higo-framework@latest: %w", err)
+	}
+
+	tidy := exec.Command("go", "mod", "tidy")
+	tidy.Dir = dir
+	tidy.Stdout = os.Stdout
+	tidy.Stderr = os.Stderr
+	if err := tidy.Run(); err != nil {
+		return fmt.Errorf("go mod tidy: %w", err)
+	}
+	return nil
+}
 
 const maxLines = 5
 const boxWidth = 62
