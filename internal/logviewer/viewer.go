@@ -28,9 +28,9 @@ type Model struct {
 	logCh   <-chan Entry
 	logFile string
 
-	activeLevel Level
-	compiledRe  *regexp.Regexp
-	reErr       string
+	activeLevel  Level
+	compiledRe   *regexp.Regexp
+	reErr        string
 	regexFocus   bool // true = typing in regex, false = level selector active
 	mouseEnabled bool // true = bubbletea captures mouse (wheel scroll); false = native text selection
 
@@ -45,12 +45,6 @@ type Model struct {
 
 type newEntryMsg Entry
 type channelClosedMsg struct{}
-type clearSelectionMsg struct{}
-
-// clearSelectionCmd briefly claims then releases mouse to force the terminal to drop any text selection.
-func clearSelectionCmd() tea.Cmd {
-	return func() tea.Msg { return clearSelectionMsg{} }
-}
 
 // New creates the initial TUI model.
 func New(logCh <-chan Entry, logFile string) Model {
@@ -61,12 +55,13 @@ func New(logCh <-chan Entry, logFile string) Model {
 	ti.Width = 35
 
 	return Model{
-		logCh:       logCh,
-		logFile:     logFile,
-		activeLevel: LevelAll,
-		regexFocus:  true,
-		follow:      true,
-		regexInput:  ti,
+		logCh:        logCh,
+		logFile:      logFile,
+		activeLevel:  LevelAll,
+		regexFocus:   true,
+		follow:       true,
+		regexInput:   ti,
+		mouseEnabled: true,
 	}
 }
 
@@ -82,7 +77,7 @@ func waitForEntry(ch <-chan Entry) tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, waitForEntry(m.logCh))
+	return tea.Batch(textinput.Blink, waitForEntry(m.logCh), tea.EnableMouseCellMotion)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -124,11 +119,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case channelClosedMsg:
 		return m, tea.Quit
-
-	case clearSelectionMsg:
-		if !m.mouseEnabled {
-			return m, tea.DisableMouse
-		}
 
 	case tea.MouseMsg:
 		if m.mouseEnabled && m.ready {
@@ -184,10 +174,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if key == "pgup" || key == "up" {
 					m.follow = false
 				}
-			}
-			if !m.mouseEnabled {
-				// briefly claim mouse ownership to force terminal to drop any text selection
-				cmds = append(cmds, tea.EnableMouseCellMotion, clearSelectionCmd())
 			}
 			return m, tea.Batch(cmds...)
 		}
@@ -330,9 +316,9 @@ var (
 			Foreground(lipgloss.Color("8")).
 			Padding(0, 1)
 
-	followOn  = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-	followOff = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	helpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	followOn   = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+	followOff  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	helpStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	reErrStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 )
 
